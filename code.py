@@ -47,6 +47,9 @@ MESES = {
     "dezembro": 12
 }
 
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
 
 def tokens():
 
@@ -75,63 +78,86 @@ def headers():
 
 def listar_emails():
 
-    url = (
-        f"https://graph.microsoft.com/v1.0/users/{EMAIL}/"
-        "mailFolders/Inbox/messages"
-        "?$orderby=receivedDateTime desc"
-        "&$top=5"
-    )
+    log("Checando novos e-mails...")
 
-    resposta = requests.get(url, headers=headers())
+    try:
 
-    print(resposta.json())
-    return resposta.json()["value"]
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{EMAIL}/"
+            "mailFolders/Inbox/messages"
+            "?$orderby=receivedDateTime desc"
+            "&$top=5"
+        )
+
+        resposta = requests.get(url, headers=headers())
+
+        return resposta.json()["value"]
+    except Exception as e:
+        log(f"Erro ao listar e-mails: {e}")
+        return []
 
 
 def obter_email(message_id):
 
-    url = (
-        f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
-        f"/messages/{message_id}"
-    )
+    log(f"Obtendo detalhes do e-mail {message_id}...")
 
-    resposta = requests.get(
-        url,
-        headers=headers()
-    )
+    try:
 
-    return resposta.json()
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
+            f"/messages/{message_id}"
+        )
+
+        resposta = requests.get(
+            url,
+            headers=headers()
+        )
+
+        log(f"Detalhes carregados. Status {resposta.status_code}")
+
+        return resposta.json()
+    except Exception as e:
+        log(f"Erro ao obter e-mail: {e}")
+        return None
 
 
 
 
 def baixar_pdfs(message_id):
+    try:
 
-    url = (
-        f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
-        f"/messages/{message_id}/attachments"
-    )
+        log("Baixando anexos PDF...")
 
-    resposta = requests.get(
-        url,
-        headers=headers()
-    ).json()
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
+            f"/messages/{message_id}/attachments"
+        )
 
-    arquivos = []
+        resposta = requests.get(
+            url,
+            headers=headers()
+        ).json()
 
-    for anexo in resposta["value"]:
+        arquivos = []
 
-        if not anexo["name"].lower().endswith(".pdf"):
-            continue
+        for anexo in resposta["value"]:
 
-        caminho = os.path.join(TEMP_PATH, anexo["name"])
+            if not anexo["name"].lower().endswith(".pdf"):
+                continue
 
-        with open(caminho, "wb") as f:
-            f.write(base64.b64decode(anexo["contentBytes"]))
+            log(f"Anexo encontrado {anexo['name']}")
+            caminho = os.path.join(TEMP_PATH, anexo["name"])
 
-        arquivos.append(caminho)
+            with open(caminho, "wb") as f:
+                f.write(base64.b64decode(anexo["contentBytes"]))
 
-    return arquivos
+            arquivos.append(caminho)
+
+        log(f"{len(arquivos)} PDFs baixados.")
+        return arquivos
+    except Exception as e:
+        log(f"Erro ao baixar PDFs: {e}")
+        return []
 
 
 def extrair_qualquer_data(texto):
@@ -217,126 +243,178 @@ def extrair_validade(texto):
     return min(datas) if datas else None
 
 def extrair_texto_pdf(caminho_pdf):
+
+    log(f"Lendo PDF: {os.path.basename(caminho_pdf)}")
+    
     texto_pdf = ""
     try:
         with pdfplumber.open(caminho_pdf) as pdf:
+
+            log(f"{len(pdf.pages)} páginas encontradas.")
+
             for pagina in pdf.pages:
                 conteudo = pagina.extract_text()
                 if conteudo:
                     texto_pdf += conteudo + "\n"
+
     except Exception as erro:
-        print(f"Erro leitura PDF: {erro}")
+        log(f"Erro leitura PDF: {erro}")
     return texto_pdf
 
 
 def executar_ocr(caminho_pdf):
 
-    imagens = convert_from_path(
-        caminho_pdf,
-        dpi=500
-    )
+    try:
 
-    texto = ""
+        log(f"Iniciando OCR em {os.path.basename(caminho_pdf)}")
 
-    for img in imagens:
-
-        texto += pytesseract.image_to_string(
-            img,
-            lang="por"
+        imagens = convert_from_path(
+            caminho_pdf,
+            dpi=500
         )
 
-    return texto
+        log(f"{len(imagens)} páginas convertidas para imagem.")
+
+        texto = ""
+
+        for img in imagens:
+
+            texto += pytesseract.image_to_string(
+                img,
+                lang="por"
+            )
+
+        log("OCR concluído.")
+
+        return texto
+    except Exception as e:
+        log(f"Erro ao executar OCR: {e}")
+        return ""
 
 def descobrir_data(email):
+    try:
 
-    assunto = email["subject"]
+        log(f"Processando assunto: {email['subject']}")
 
-    data = extrair_qualquer_data(assunto)
+        assunto = email["subject"]
 
-    if data:
-        return data
+        data = extrair_qualquer_data(assunto)
 
-    corpo = email["body"]["content"]
+        if data:
 
-    data = extrair_validade(corpo)
+            log(f"Data encontrada no assunto: {data:%d/%m/%Y}")
 
-    if data:
-        return data
+            return data
 
-    pdfs = baixar_pdfs(email["id"])
+        corpo = email["body"]["content"]
 
-    datas = []
+        data = extrair_validade(corpo)
 
-    for pdf in pdfs:
+        if data:
 
-        texto = extrair_texto_pdf(pdf)
+            log(f"Data encontrada no corpo do e-mail: {data:%d/%m/%Y}")
+            return data
 
-        validade = extrair_validade(texto)
+        pdfs = baixar_pdfs(email["id"])
 
-        if not validade:
+        datas = []
 
-            texto = executar_ocr(pdf)
+        for pdf in pdfs:
+
+            texto = extrair_texto_pdf(pdf)
 
             validade = extrair_validade(texto)
 
-        if validade:
-            datas.append(validade)
+            if not validade:
 
-        os.remove(pdf)
+                log(f"Falha ao extrair data do PDF. Executando OCR...")
 
-    if datas:
-        return min(datas)
+                texto = executar_ocr(pdf)
 
-    return None
+                validade = extrair_validade(texto)
+
+            if validade:
+
+                log(f"Data encontrada no PDF: {validade:%d/%m/%Y}")
+                datas.append(validade)
+
+            os.remove(pdf)
+
+        if datas:
+            return min(datas)
+        
+        log("Nenhuma data encontrada.")
+
+        return None
+    except Exception as e:
+        log(f"Erro ao descobrir data: {e}")
+        return None
 
 def processar_email(message_id):
+    try:
 
-    email = obter_email(message_id)
+        log(f"Iniciando processamento do e-mail {message_id}...")
 
-    assunto = email["subject"]
+        email = obter_email(message_id)
 
-    if re.match(r"^\d{2}/\d{2}/\d{4}", assunto):
-        return
+        assunto = email["subject"]
 
-    data = descobrir_data(email)
+        log(f"Assunto atual: {assunto}")
 
-    if not data:
-        return
+        if re.match(r"^\d{2}/\d{2}/\d{4}", assunto):
+            return
 
-    if data.date() <= datetime.now().date():
+        data = descobrir_data(email)
 
-        novo_assunto = (
-            f"{data:%d/%m/%Y} - Atenção - {assunto}"
+        if not data:
+            return
+
+        if data.date() <= datetime.now().date():
+
+            novo_assunto = (
+                f"{data:%d/%m/%Y} - Atenção - {assunto}"
+            )
+
+        else:
+
+            novo_assunto = (
+                f"{data:%d/%m/%Y} - {assunto}"
+            )
+
+        atualizar_assunto(
+            message_id,
+            novo_assunto
         )
 
-    else:
-
-        novo_assunto = (
-            f"{data:%d/%m/%Y} - {assunto}"
-        )
-
-    atualizar_assunto(
-        message_id,
-        novo_assunto
-    )
+    except Exception as e:
+        log(f"Erro ao processar e-mail {message_id}: {e}")
 
 def atualizar_assunto(message_id, novo_assunto):
 
-    url = (
-        f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
-        f"/messages/{message_id}"
-    )
+    log("Atualizando assunto do e-mail...")
 
-    requests.patch(
-        url,
-        headers=headers(),
-        json={
-            "subject": novo_assunto
-        }
-    )
+    try:
+
+        url = (
+            f"https://graph.microsoft.com/v1.0/users/{EMAIL}"
+            f"/messages/{message_id}"
+        )
+
+        resposta = requests.patch(
+            url,
+            headers=headers(),
+            json={
+                "subject": novo_assunto
+            }
+        )
+        log(f"Status atualização: {resposta.status_code}")
+    except Exception as e:
+        log(f"Erro na atualização do assunto {e}")
 
 def last_email():
     emails_processados = set()
+
+    log("Monitoramento iniciado.")
 
     while True:
         emails = listar_emails()
@@ -344,7 +422,10 @@ def last_email():
         for email in emails:
             id_email= email["id"]
 
+            log(f"Novo e-mail encontrado: {email['subject']}")
+
             if id_email in emails_processados:
+                log("E-mail já processado")
                 continue
 
             emails_processados.add(id_email)
